@@ -43,7 +43,7 @@ class SessionGenerator{
     func getSessionDataFromHeroku(completion: @escaping (_ sessionId:String,_ token:String) -> ()){
         let configuration = URLSessionConfiguration.default
         let session = URLSession(configuration: configuration)
-        let url = URL(string: "https://realtimeavchat.herokuapp.com/session")
+        let url = URL(string: "https://realtimeavsession.herokuapp.com/session")
         let dataTask = session.dataTask(with: url!) {
             (data: Data?, response: URLResponse?, error: Error?) in
             

@@ -9,6 +9,8 @@
 import UIKit
 import OpenTok
 import CallKit
+import FirebaseDatabase
+import FirebaseAuth
 
 protocol CallRecievedDelegate:NSObjectProtocol{
     func callRecieved(forStream:OTStream)
@@ -19,7 +21,7 @@ protocol CallEndedDelegate:NSObjectProtocol{
 }
 
 
-class TokSessionViewController: UIViewController,CXProviderDelegate {
+class TokSessionViewController: UIViewController {
 
     var apiKey:String = "46180522"
     var sessionId:String = ""
@@ -42,27 +44,56 @@ class TokSessionViewController: UIViewController,CXProviderDelegate {
     var callRecieveDelegate:CallRecievedDelegate?
     var callEndDelegate:CallEndedDelegate?
     var isReciever:Bool = false
-    var isCaller:Bool = false
     var callStream:OTStream!
+    var callerData:RLTUser!
     
     override func viewDidLoad() {
         super.viewDidLoad()
         view.backgroundColor = .black
         setupViews()
-        // reciever will create a publisher else caller will create a new session
-        if isReciever{
-            SpinnerView.shared.showSpinnerOn(view: view)
-            createNewTokSession()
-        }
-        if isCaller{
-            SpinnerView.shared.showSpinnerOn(view: view)
-            createNewTokSession()
-        }
+        SpinnerView.shared.showSpinnerOn(view: view)
+        createNewTokSession()
     }
-
-    // call delegate
-    func providerDidReset(_ provider: CXProvider) {
-        
+    
+    func createNewTokSession(){
+        // reciever session
+        if !sessionId.isEmpty{
+            self.tokSession = OTSession(apiKey: self.apiKey, sessionId: sessionId, delegate: self)
+            var sessionError:OTError?
+            self.tokSession?.connect(withToken: token, error: &sessionError)
+            if sessionError == nil{
+                return
+            }
+            self.showAlert(title: "Error", message: sessionError?.localizedDescription ?? "")
+            return
+        }
+        SessionGenerator.shared.getSessionDataFromHeroku(completion: { (sessionId, token) in
+            self.sessionId = sessionId
+            self.token = token
+            self.tokSession = OTSession(apiKey: self.apiKey, sessionId: sessionId, delegate: self)
+            var sessionError:OTError?
+            self.tokSession?.connect(withToken: token, error: &sessionError)
+            if sessionError == nil{
+                return
+            }
+            self.showAlert(title: "Error", message: sessionError?.localizedDescription ?? "")
+        })
+    }
+    
+    func createCallHistory(){
+        let historyRef = Database.database().reference().child("CallHistory").child(Auth.auth().currentUser?.uid ?? "")
+        var historyData:[String:Any] = [:]
+        historyData["callerName"] = RLTUser.shared.name ?? ""
+        historyData["recieverId"] = callerData.userId ?? ""
+        historyData["sessionId"] = self.sessionId
+        historyData["token"] = self.token
+        historyRef.updateChildValues(historyData) { (err, ref) in
+            if err == nil{
+                // make call
+            }else{
+                self.showAlert(title: "Error", message: err?.localizedDescription ?? "")
+            }
+        }
     }
     
     func createNewPublisher(){
@@ -134,20 +165,6 @@ class TokSessionViewController: UIViewController,CXProviderDelegate {
         view.bringSubview(toFront: endCallButton)
     }
     
-    func createNewTokSession(){
-        SessionGenerator.shared.getSessionDataFromHeroku(completion: { (sessionId, token) in
-            self.sessionId = sessionId
-            self.token = token
-            self.tokSession = OTSession(apiKey: self.apiKey, sessionId: sessionId, delegate: self)
-            var sessionError:OTError?
-            self.tokSession?.connect(withToken: token, error: &sessionError)
-            if sessionError == nil{
-                return
-            }
-            self.showAlert(title: "Error", message: sessionError?.localizedDescription ?? "")
-        })
-    }
-    
     func setupViews(){
         view.addSubview(endCallButton)
         endCallButton.widthAnchor.constraint(equalToConstant: 62).isActive = true
@@ -164,7 +181,7 @@ class TokSessionViewController: UIViewController,CXProviderDelegate {
             tokSession?.disconnect(&error)
         }
         self.dismiss(animated: true, completion: nil)
-        callEndDelegate?.callEnded()
+//        callEndDelegate?.callEnded()
     }
     
     override func didReceiveMemoryWarning() {
@@ -176,17 +193,8 @@ class TokSessionViewController: UIViewController,CXProviderDelegate {
 extension TokSessionViewController:OTSessionDelegate{
     func sessionDidConnect(_ session: OTSession) {
         print("Session connected")
-        if isCaller{
-            SpinnerView.shared.removeSpinnerFrom(view: view)
-            createNewPublisher()
-        }
-        if isReciever{
-            SpinnerView.shared.removeSpinnerFrom(view: view)
-            createNewPublisher()
-            DispatchQueue.main.asyncAfter(deadline: DispatchTime.now() + 0.7) {
-                self.createNewSubscriber(forStream: self.callStream)
-            }
-        }
+        SpinnerView.shared.removeSpinnerFrom(view: view)
+        createNewPublisher()
     }
     
     func sessionDidDisconnect(_ session: OTSession) {
@@ -199,7 +207,7 @@ extension TokSessionViewController:OTSessionDelegate{
     
     func session(_ session: OTSession, streamCreated stream: OTStream) {
         print("stream created")
-        (isCaller) ? createNewSubscriber(forStream: stream) : callRecieveDelegate?.callRecieved(forStream: stream)
+        createNewSubscriber(forStream: stream)
     }
     
     func session(_ session: OTSession, streamDestroyed stream: OTStream) {
@@ -215,6 +223,9 @@ extension TokSessionViewController:OTPublisherDelegate{
     
     func publisher(_ publisher: OTPublisherKit, streamCreated stream: OTStream) {
         print("publisher created stream")
+        if !isReciever{
+            createCallHistory()
+        }
     }
 }
 

@@ -32,6 +32,8 @@ class UsersListingViewController: UIViewController,CallRecievedDelegate,CallEnde
     let callerUUID = UUID()
     var callerName:String = ""
     var callerId:String = ""
+    var currentSessionId = ""
+    var currentToken = ""
     
     override func viewDidLoad() {
         super.viewDidLoad()
@@ -45,6 +47,7 @@ class UsersListingViewController: UIViewController,CallRecievedDelegate,CallEnde
     
     override func viewWillAppear(_ animated: Bool) {
         callerName = ""
+        callerId = ""
         startListeningTokSessionDelegates()
     }
     
@@ -60,13 +63,12 @@ class UsersListingViewController: UIViewController,CallRecievedDelegate,CallEnde
         tokSesionController = TokSessionViewController()
         tokSesionController.callRecieveDelegate = self
         tokSesionController.callEndDelegate = self
-        tokSesionController.createNewTokSession()
+//        tokSesionController.createNewTokSession()
     }
     
     func callRecieved(forStream:OTStream) {
         // recieve call here
         tokSesionController.isReciever = true
-        tokSesionController.isCaller = false
         tokSesionController.callStream = forStream
         recieveCall()
     }
@@ -82,16 +84,10 @@ class UsersListingViewController: UIViewController,CallRecievedDelegate,CallEnde
             }
             print("EndCallAction transaction request successful")
         }
+        deleteCallHistory()
     }
     
     func recieveCall(){
-        if callerName.isEmpty{
-            tokSesionController.isReciever = false
-            tokSesionController.isCaller = false
-            tokSesionController.callStream = nil
-            tokSesionController.createNewTokSession()
-            return
-        }
         let callUpdater = CXCallUpdate()
         callUpdater.hasVideo = true
         callUpdater.remoteHandle = CXHandle(type: .generic, value: callerName + " Calling...")
@@ -188,31 +184,39 @@ class UsersListingViewController: UIViewController,CallRecievedDelegate,CallEnde
     @objc func callUser(sender:UIButton){
         let userToCall = listOfUsers[sender.tag]
         if userToCall.isOnline ?? false{
-            createCallHistory(user: userToCall)
+            isRecieverAlreadyInCall(callerData: userToCall) { (succ) in
+                self.callHistoryListener()
+                if succ{
+                    self.tokSesionController.callerData = userToCall
+                    self.present(self.tokSesionController, animated: true, completion: nil)
+                }else{
+                    self.showAlert(title: "Could'nt make a call", message: "\(userToCall.name ?? "") is attending another call.")
+                }
+            }
         }else{
             self.showAlert(title: "Can't make a call", message: "\(userToCall.name ?? "User") is offline")
         }
     }
     
-    func createCallHistory(user:RLTUser){
-        let historyRef = Database.database().reference().child("CallHistory").child(Auth.auth().currentUser?.uid ?? "")
-        var historyData:[String:Any] = [:]
-        historyData["callerName"] = RLTUser.shared.name ?? ""
-        historyData["recieverId"] = user.userId ?? ""
-        historyRef.updateChildValues(historyData) { (err, ref) in
-            if err == nil{
-                // make call
-                self.tokSesionController.isCaller = true
-                self.tokSesionController.callStream = nil
-                self.present(self.tokSesionController, animated: true, completion: nil)
-            }else{
-                self.showAlert(title: "Error", message: err?.localizedDescription ?? "")
-            }
+    func isRecieverAlreadyInCall(callerData:RLTUser,completion:@escaping (_ success:Bool)->()){
+        let historyRef = Database.database().reference().child("CallHistory")
+        historyRef.observe(DataEventType.value) { (snapshot) in
+            let dt = snapshot.value as? [String:Any] ?? [:]
+            dt.forEach({ (keyValue) in
+                let data = keyValue.value as? [String:Any] ?? [:]
+                if (data["recieverId"] as? String ?? " ") == callerData.userId ?? ""{
+                    historyRef.removeAllObservers()
+                    completion(false)
+                    return
+                }
+            })
+            historyRef.removeAllObservers()
+            completion(true)
         }
     }
     
     func deleteCallHistory(){
-        if callerId == ""{
+        if callerId.isEmpty{
             return
         }
         let historyRef = Database.database().reference().child("CallHistory").child(callerId)
@@ -220,6 +224,8 @@ class UsersListingViewController: UIViewController,CallRecievedDelegate,CallEnde
             if err == nil{
                 self.callerName = ""
                 self.callerId = ""
+                self.currentToken = ""
+                self.currentSessionId = ""
             }else{
                self.showAlert(title: "Error", message: err?.localizedDescription ?? "")
             }
@@ -229,12 +235,19 @@ class UsersListingViewController: UIViewController,CallRecievedDelegate,CallEnde
     func callHistoryListener(){
         let historyRef = Database.database().reference().child("CallHistory")
         historyRef.observe(DataEventType.value) { (snapshot) in
+            if !self.callerId.isEmpty{
+                // dont listen if user is already in call
+                return
+            }
             let dt = snapshot.value as? [String:Any] ?? [:]
             dt.forEach({ (keyValue) in
                 let data = keyValue.value as? [String:Any] ?? [:]
-                if (data["recieverId"] as? String ?? "") == RLTUser.shared.userId{
+                if (data["recieverId"] as? String ?? "") == RLTUser.shared.userId && self.callerId.isEmpty{
                     self.callerName = data["callerName"] as? String ?? ""
                     self.callerId = keyValue.key
+                    self.tokSesionController.sessionId = data["sessionId"] as? String ?? ""
+                    self.tokSesionController.token = data["token"] as? String ?? ""
+                    self.recieveCall()
                 }
             })
         }
@@ -282,6 +295,7 @@ extension UsersListingViewController:CXProviderDelegate{
     func provider(_ provider: CXProvider, perform action: CXAnswerCallAction) {
         print("user answered")
         action.fulfill()
+        tokSesionController.isReciever = true
         self.present(tokSesionController, animated: true, completion: nil)
     }
     
@@ -289,10 +303,8 @@ extension UsersListingViewController:CXProviderDelegate{
         print("user rejected")
         action.fulfill()
         tokSesionController.isReciever = false
-        tokSesionController.isCaller = false
         tokSesionController.callStream = nil
         startListeningTokSessionDelegates()
-        callerName = ""
         deleteCallHistory()
     }
 }
